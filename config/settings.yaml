@@ -1,0 +1,30 @@
+seed_keywords:
+  - "목 어깨 안마기 추천"
+  - "거북목 완화 용품"
+  - "부모님 효도선물"
+  - "가성비 안마기"
+
+target_audience_map:
+  "목 어깨 안마기 추천": "거북목·어깨뭉침이 걱정되는 부모님"
+  "거북목 완화 용품": "장시간 앉아서 일하는 직장인"
+  "부모님 효도선물": "부모님께 실용적인 선물을 드리고 싶은 자녀"
+  "가성비 안마기": "가격 대비 만족도를 중시하는 소비자"
+
+# 차단 회피가 아니라 "품질 유지 + 독자 경험"을 기준으로 한 일일 게시 한도.
+# 구글 Blogger는 공식 API로 완전 자동 발행되고, 네이버/티스토리는 초안만
+# 자동 생성되어 사람이 검수 후 게시한다.
+platforms:
+  google_blogger:
+    enabled: true
+    daily_post_cap: 2
+  naver_blog:
+    enabled: true
+    daily_post_cap: 1
+  tistory:
+    enabled: true
+    daily_post_cap: 1
+
+history_path: "data/history.json"
+draft_output_dir: "drafts"
+ohouse_csv_path: "data/ohouse_products.csv"
+duplicate_lookback_days: 30
