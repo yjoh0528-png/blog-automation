@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..models import Platform
@@ -46,9 +46,24 @@ class HistoryStore:
         return ids
 
     def count_today(self, platform: Platform) -> int:
-        today = date.today().isoformat()
+        # published_at은 UTC로 저장되므로 "오늘"도 UTC 기준으로 비교한다.
+        # date.today()(로컬 타임존)와 비교하면 KST(UTC+9) 등에서는 로컬
+        # 자정~UTC 자정 사이에 날짜가 어긋나 하루 집계가 샌다.
+        today = datetime.now(timezone.utc).date().isoformat()
         return sum(
             1
             for record in self._load()
             if record["platform"] == platform.value and record["published_at"].startswith(today)
         )
+
+    def minutes_since_last_publish(self, platform: Platform) -> float | None:
+        """해당 플랫폼의 마지막 발행으로부터 경과한 분(分). 발행 이력이 없으면 None."""
+        timestamps = [
+            datetime.fromisoformat(record["published_at"])
+            for record in self._load()
+            if record["platform"] == platform.value
+        ]
+        if not timestamps:
+            return None
+        last = max(timestamps)
+        return (datetime.now(timezone.utc) - last).total_seconds() / 60

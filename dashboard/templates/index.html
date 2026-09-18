@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>블로그 자동화 대시보드</title>
+  <style>
+    body { font-family: -apple-system, "Malgun Gothic", sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 17px; margin-top: 36px; }
+    .banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; }
+    .banner.dry-run { background: #e6f7ef; color: #1c6b46; }
+    .banner.live { background: #fdeee8; color: #a8391a; }
+    .sites { display: flex; gap: 12px; flex-wrap: wrap; }
+    .site-card { border: 1px solid #ddd; border-radius: 8px; padding: 14px; width: 190px; }
+    .site-card .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+    .dot.on { background: #3fb27f; }
+    .dot.off { background: #bbb; }
+    button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 14px; font-size: 14px; }
+    .btn-primary { background: #3f6fd1; color: #fff; }
+    .btn-danger { background: #d1483f; color: #fff; }
+    .btn-outline { background: #fff; border: 1px solid #ccc; }
+    .post-card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+    .post-card .meta { color: #777; font-size: 13px; margin-bottom: 8px; }
+    .status-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; margin-left: 6px; }
+    .status-pending { background: #eee; }
+    .status-dry_run { background: #e6f7ef; color: #1c6b46; }
+    .status-published { background: #e3ecff; color: #2a4fa0; }
+    .status-failed { background: #fdeee8; color: #a8391a; }
+    form.inline { display: inline; }
+    .preview { white-space: pre-wrap; background: #fafafa; border: 1px solid #eee; padding: 10px; border-radius: 6px; max-height: 260px; overflow: auto; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>블로그 자동화 대시보드</h1>
+
+  {% if settings.dry_run %}
+  <div class="banner dry-run">연습 모드(dry run) — "게시"를 눌러도 실제로 올라가지 않습니다.</div>
+  {% else %}
+  <div class="banner live">실제 게시 모드 — "게시"를 누르면 네이버에 실제로 올라갑니다. 오늘 네이버 게시 {{ today_naver_count }}건.</div>
+  {% endif %}
+  {% if settings.kill_switch %}
+  <div class="banner live">전체 중단(kill switch)이 켜져 있어 어떤 게시도 실행되지 않습니다.</div>
+  {% endif %}
+
+  <h2>플랫폼 로그인</h2>
+  <div class="sites">
+    {% for site in sites %}
+    <div class="site-card" id="site-{{ site.key }}">
+      <div><span class="dot {{ 'on' if site.logged_in else 'off' }}"></span><strong>{{ site.label }}</strong></div>
+      <p style="font-size:12px;color:#777;margin:6px 0;">
+        {% if site.logged_in %}로그인됨{% else %}로그인 필요{% endif %}
+      </p>
+      <button class="btn-outline" onclick="startLogin('{{ site.key }}')">로그인</button>
+      <p class="login-progress" style="font-size:12px;color:#999;margin-top:6px;"></p>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2>새 글 생성</h2>
+  <form method="post" action="/generate">
+    <input type="text" name="keyword" placeholder="키워드 (비워두면 자동 추천)" style="padding:8px;width:280px;">
+    <button class="btn-primary" type="submit">생성</button>
+  </form>
+
+  <h2>생성된 글 ({{ posts|length }}건)</h2>
+  {% if not naver_publish_ready %}
+  <p style="color:#a8391a;font-size:13px;">
+    네이버 게시 스크립트가 아직 없습니다. README의 안내대로
+    <code>playwright codegen</code>으로 녹화한 뒤
+    <code>{{ settings.naver_post_script_path }}</code>에 저장하면
+    "게시" 버튼이 활성화됩니다.
+  </p>
+  {% endif %}
+
+  {% for post in posts %}
+  <div class="post-card" id="post-{{ post.id }}">
+    <div class="meta">
+      {{ post.platform }} · {{ post.keyword }} · {{ post.product_title }}
+      <span class="status-pill status-{{ post.status }}">{{ post.status }}</span>
+    </div>
+    <strong>{{ post.title }}</strong>
+    <div class="preview">{{ post.markdown }}</div>
+    <div style="margin-top:10px;">
+      <button class="btn-primary" onclick="publishPost('{{ post.id }}')" {{ 'disabled' if not naver_publish_ready and not settings.dry_run else '' }}>
+        게시
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+
+  <script>
+    function startLogin(siteKey) {
+      fetch(`/login/${siteKey}`, { method: "POST" })
+        .then(() => pollLoginStatus(siteKey));
+    }
+
+    function pollLoginStatus(siteKey) {
+      const card = document.getElementById(`site-${siteKey}`);
+      const progressEl = card.querySelector(".login-progress");
+      const interval = setInterval(() => {
+        fetch(`/login/${siteKey}/status`)
+          .then((r) => r.json())
+          .then((data) => {
+            const progress = data.login_progress;
+            if (!progress) return;
+            progressEl.textContent = progress.status;
+            if (progress.status === "success") {
+              clearInterval(interval);
+              location.reload();
+            } else if (["timeout", "canceled", "error"].includes(progress.status)) {
+              clearInterval(interval);
+            }
+          });
+      }, 2000);
+    }
+
+    function publishPost(postId) {
+      if (!confirm("이 글을 실제로 게시하시겠습니까? (연습 모드에서는 실제로 올라가지 않습니다)")) return;
+      fetch(`/posts/${postId}/publish`, { method: "POST" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.error) {
+            alert(data.error);
+          } else {
+            alert(data.message || `상태: ${data.status}`);
+            location.reload();
+          }
+        });
+    }
+  </script>
+</body>
+</html>

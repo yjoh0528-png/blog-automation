@@ -1,0 +1,19 @@
+# 로그인 세션을 저장할 사이트 목록.
+#
+# 주의: login_url은 확인되지 않은 참고용 기본값입니다. 이 환경은 실제
+# 네트워크로 각 사이트에 접근해 로그인 URL을 검증할 수 없었습니다. 대시보드에서
+# "로그인" 버튼을 눌렀을 때 곧바로 로그인 화면이 뜨지 않으면, 아래 login_url을
+# 실제 로그인 페이지 주소로 직접 수정하세요.
+sites:
+  naver_blog:
+    label: "네이버 블로그"
+    login_url: "https://nid.naver.com/nidlogin.login"
+  coupang_partners:
+    label: "쿠팡 파트너스"
+    login_url: "https://partners.coupang.com/"
+  ohouse:
+    label: "오늘의집"
+    login_url: "https://ohou.se/auth/login"
+  naver_brand_connect:
+    label: "네이버 브랜드 커넥트"
+    login_url: "https://brandconnect.naver.com/"

@@ -22,6 +22,14 @@ class Settings:
     draft_output_dir: str = "drafts"
     ohouse_csv_path: str = "data/ohouse_products.csv"
     duplicate_lookback_days: int = 30
+    # 발행 안전장치: 차단 회피가 아니라 "실수로 인한 실제 게시" 방지가 목적.
+    dry_run: bool = True
+    kill_switch: bool = False
+    min_publish_interval_min: int = 30
+    # 사용자가 playwright codegen으로 직접 녹화한 네이버 게시 스크립트 경로.
+    naver_post_script_path: str = "scripts/recorded/naver_post.py"
+    session_dir: str = "data/sessions"
+    pending_posts_dir: str = "data/pending_posts"
 
     @classmethod
     def load(cls, path: str | Path) -> "Settings":
@@ -39,6 +47,16 @@ class Settings:
             duplicate_lookback_days=raw.get(
                 "duplicate_lookback_days", cls.duplicate_lookback_days
             ),
+            dry_run=raw.get("dry_run", cls.dry_run),
+            kill_switch=raw.get("kill_switch", cls.kill_switch),
+            min_publish_interval_min=raw.get(
+                "min_publish_interval_min", cls.min_publish_interval_min
+            ),
+            naver_post_script_path=raw.get(
+                "naver_post_script_path", cls.naver_post_script_path
+            ),
+            session_dir=raw.get("session_dir", cls.session_dir),
+            pending_posts_dir=raw.get("pending_posts_dir", cls.pending_posts_dir),
         )
 
 
