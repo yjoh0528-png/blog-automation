@@ -23,10 +23,12 @@ session_path에 저장하고 브라우저를 닫는다.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 TIMEOUT_SECONDS = 600
 POLL_INTERVAL_SECONDS = 0.5
@@ -78,55 +80,89 @@ def _write_status(status_path: Path, status: str, **extra: object) -> None:
     status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def capture_session(
+    site: str,
+    login_url: str,
+    session_path: Path,
+    status_path: Path,
+    timeout_seconds: float = TIMEOUT_SECONDS,
+    headless: bool = False,
+    on_page_ready: "Callable[[object], None] | None" = None,
+) -> str:
+    """로그인 세션 캡처의 핵심 로직. 운영 CLI와 테스트가 공유한다.
+
+    on_page_ready(page)는 페이지 로드+버튼 주입 직후 호출되는 훅이다.
+    운영 코드(main())는 이 훅을 쓰지 않는다(사람이 실제로 로그인 후
+    버튼을 누른다) - 통합 테스트에서만 "사람이 버튼을 누르는 것"을
+    프로그램적으로 흉내내는 용도로 쓴다.
+
+    반환값: "success" | "timeout" | "canceled"
+    """
+    from playwright.sync_api import sync_playwright  # 지연 임포트
+
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_status(status_path, "waiting", site=site)
+
+    done = {"flag": False}
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        context = browser.new_context()
+        page = context.new_page()
+
+        context.expose_binding(BINDING_NAME, lambda source: done.__setitem__("flag", True))
+        context.add_init_script(_INIT_SCRIPT_TEMPLATE)
+
+        page.goto(login_url)
+
+        if on_page_ready is not None:
+            on_page_ready(page)
+
+        start = time.monotonic()
+        result_status = "timeout"
+        while time.monotonic() - start < timeout_seconds:
+            if page.is_closed():
+                result_status = "canceled"
+                break
+            if done["flag"]:
+                result_status = "success"
+                break
+            page.wait_for_timeout(int(POLL_INTERVAL_SECONDS * 1000))
+
+        if result_status == "success":
+            context.storage_state(path=str(session_path))
+            _write_status(status_path, "success", site=site)
+        else:
+            _write_status(status_path, result_status, site=site)
+
+        browser.close()
+        return result_status
+
+
 def main() -> int:
     if len(sys.argv) != 4:
-        print("사용법: python scripts/browser_login.py <site> <login_url> <session_path>", file=sys.stderr)
+        print(
+            "사용법: python scripts/browser_login.py <site> <login_url> <session_path>",
+            file=sys.stderr,
+        )
         return 2
 
     site, login_url, session_path_arg = sys.argv[1], sys.argv[2], sys.argv[3]
     session_path = Path(session_path_arg)
-    session_path.parent.mkdir(parents=True, exist_ok=True)
     status_path = session_path.with_suffix(session_path.suffix + ".status.json")
-
-    _write_status(status_path, "waiting", site=site)
-
-    from playwright.sync_api import sync_playwright  # 지연 임포트
-
-    done = {"flag": False}
+    # 환경변수로 제한 시간을 조절 가능하게 함 (자동 테스트에서 600초를
+    # 기다리지 않도록 - 기본값은 TIMEOUT_SECONDS 그대로).
+    timeout_seconds = float(os.environ.get("BLOGAUTO_LOGIN_TIMEOUT_SECONDS", TIMEOUT_SECONDS))
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context()
-            page = context.new_page()
-
-            context.expose_binding(BINDING_NAME, lambda source: done.__setitem__("flag", True))
-            context.add_init_script(_INIT_SCRIPT_TEMPLATE)
-
-            page.goto(login_url)
-
-            start = time.monotonic()
-            result_status = "timeout"
-            while time.monotonic() - start < TIMEOUT_SECONDS:
-                if page.is_closed():
-                    result_status = "canceled"
-                    break
-                if done["flag"]:
-                    result_status = "success"
-                    break
-                page.wait_for_timeout(int(POLL_INTERVAL_SECONDS * 1000))
-
-            if result_status == "success":
-                context.storage_state(path=str(session_path))
-                _write_status(status_path, "success", site=site)
-            else:
-                _write_status(status_path, result_status, site=site)
-
-            browser.close()
-            return 0 if result_status == "success" else 1
+        result_status = capture_session(
+            site, login_url, session_path, status_path, timeout_seconds=timeout_seconds
+        )
     except Exception as exc:  # noqa: BLE001 - 스크립트 최상위: 원인을 상태 파일에 남기고 종료
         _write_status(status_path, "error", site=site, message=str(exc))
         raise
+
+    return 0 if result_status == "success" else 1
 
 
 if __name__ == "__main__":

@@ -75,9 +75,10 @@ class AutomationStopped(Exception):
 class ControlChannel:
     """status.json 기록 + resume/confirm/cancel 시그널 파일 대기."""
 
-    def __init__(self, control_dir: Path):
+    def __init__(self, control_dir: Path, signal_wait_timeout: float = SIGNAL_WAIT_TIMEOUT):
         self.dir = control_dir
         self.dir.mkdir(parents=True, exist_ok=True)
+        self.signal_wait_timeout = signal_wait_timeout
 
     def write_status(self, state: str, step: str, message: str | None = None, **extra):
         payload = {
@@ -91,7 +92,9 @@ class ControlChannel:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    def wait_for_any_signal(self, names: list[str], timeout: float) -> str | None:
+    def wait_for_any_signal(self, names: list[str], timeout: float | None = None) -> str | None:
+        if timeout is None:
+            timeout = self.signal_wait_timeout
         start = time.monotonic()
         while True:
             for name in names:
@@ -110,7 +113,7 @@ class ControlChannel:
             if found is not None:
                 return found
             self.write_status("blocked", step=step, message=hint)
-            signal = self.wait_for_any_signal(["resume.signal", "cancel.signal"], SIGNAL_WAIT_TIMEOUT)
+            signal = self.wait_for_any_signal(["resume.signal", "cancel.signal"])
             if signal == "cancel.signal":
                 raise AutomationStopped("canceled", step)
             if signal is None:
@@ -118,19 +121,14 @@ class ControlChannel:
             self.write_status("running", step=step, message="사용자 개입 후 재개")
 
 
-def main() -> int:
-    if len(sys.argv) != 5:
-        print(
-            "사용법: python scripts/naver_auto_publish.py <post_json> <session_path> "
-            "<control_dir> <write_url>",
-            file=sys.stderr,
-        )
-        return 2
-
-    post_json_path, session_path, control_dir_arg, write_url = sys.argv[1:5]
-    post = json.loads(Path(post_json_path).read_text(encoding="utf-8"))
-    control = ControlChannel(Path(control_dir_arg))
-
+def run_automation(
+    post: dict,
+    session_path: str | Path,
+    control: ControlChannel,
+    write_url: str,
+    headless: bool = False,
+) -> int:
+    """자동 편집 + 사람 확인 대기 + 발행의 핵심 로직. CLI와 테스트가 공유한다."""
     import requests
     from playwright.sync_api import sync_playwright
 
@@ -138,7 +136,7 @@ def main() -> int:
 
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=headless)
         except Exception as exc:  # noqa: BLE001 - 브라우저 자체가 없으면 명확히 실패 보고
             control.write_status(
                 "failed", "브라우저 시작",
@@ -147,7 +145,7 @@ def main() -> int:
             )
             return 1
 
-        context = browser.new_context(storage_state=session_path)
+        context = browser.new_context(storage_state=str(session_path))
         page = context.new_page()
 
         pending_upload: dict[str, str | None] = {"path": None}
@@ -233,9 +231,7 @@ def main() -> int:
             control.write_status(
                 "awaiting_confirmation", "발행 확인 대기", screenshot="preview.png"
             )
-            signal = control.wait_for_any_signal(
-                ["confirm.signal", "cancel.signal"], SIGNAL_WAIT_TIMEOUT
-            )
+            signal = control.wait_for_any_signal(["confirm.signal", "cancel.signal"])
             if signal == "cancel.signal":
                 raise AutomationStopped("canceled", "발행 확인 대기")
             if signal is None:
@@ -268,6 +264,22 @@ def main() -> int:
             return 1
         finally:
             browser.close()
+
+
+def main() -> int:
+    if len(sys.argv) != 5:
+        print(
+            "사용법: python scripts/naver_auto_publish.py <post_json> <session_path> "
+            "<control_dir> <write_url>",
+            file=sys.stderr,
+        )
+        return 2
+
+    post_json_path, session_path, control_dir_arg, write_url = sys.argv[1:5]
+    post = json.loads(Path(post_json_path).read_text(encoding="utf-8"))
+    control = ControlChannel(Path(control_dir_arg))
+
+    return run_automation(post, session_path, control, write_url, headless=False)
 
 
 if __name__ == "__main__":

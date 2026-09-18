@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<body>
+  <iframe id="mainFrame" src="fake_naver_editor_frame.html"
+          style="width:800px;height:600px;border:none;"></iframe>
+  <button aria-label="발행">발행</button>
+  <script>
+    document.querySelector('button[aria-label="발행"]').addEventListener('click', () => {
+      history.pushState({}, '', location.pathname + '?redirected=blog.naver.com/testuser/123456');
+    });
+  </script>
+</body>
+</html>

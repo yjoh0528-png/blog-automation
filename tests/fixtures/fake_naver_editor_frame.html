@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<body>
+  <div role="textbox" aria-label="제목" contenteditable="true"
+       style="border:1px solid #ccc;padding:8px;min-height:24px;"></div>
+  <div role="textbox" aria-label="본문" contenteditable="true"
+       style="border:1px solid #ccc;padding:8px;min-height:200px;"></div>
+  <button aria-label="사진">사진</button>
+  <input type="file" id="fileInput" style="display:none;">
+  <div id="imageResult"></div>
+  <script>
+    document.querySelector('button[aria-label="사진"]').addEventListener('click', () => {
+      document.getElementById('fileInput').click();
+    });
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+      const f = e.target.files[0];
+      document.getElementById('imageResult').textContent = f ? f.name : '';
+    });
+  </script>
+</body>
+</html>
