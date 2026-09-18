@@ -24,19 +24,26 @@
     .status-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; margin-left: 6px; }
     .status-pending { background: #eee; }
     .status-dry_run { background: #e6f7ef; color: #1c6b46; }
+    .status-publishing { background: #fff4d6; color: #8a6100; }
     .status-published { background: #e3ecff; color: #2a4fa0; }
-    .status-failed { background: #fdeee8; color: #a8391a; }
+    .status-failed, .status-canceled { background: #fdeee8; color: #a8391a; }
     form.inline { display: inline; }
     .preview { white-space: pre-wrap; background: #fafafa; border: 1px solid #eee; padding: 10px; border-radius: 6px; max-height: 260px; overflow: auto; font-size: 13px; }
+    .automation-panel { margin-top: 12px; padding: 10px; border-radius: 6px; background: #fafafa; border: 1px solid #eee; font-size: 13px; display: none; }
+    .automation-panel.blocked { background: #fff4d6; }
+    .automation-panel img { max-width: 100%; margin-top: 8px; border-radius: 4px; border: 1px solid #ddd; }
+    .field-row { margin-bottom: 8px; }
+    .field-row label { display: block; font-size: 12px; color: #777; margin-bottom: 3px; }
+    .field-row input { padding: 8px; width: 280px; }
   </style>
 </head>
 <body>
   <h1>블로그 자동화 대시보드</h1>
 
   {% if settings.dry_run %}
-  <div class="banner dry-run">연습 모드(dry run) — "게시"를 눌러도 실제로 올라가지 않습니다.</div>
+  <div class="banner dry-run">연습 모드(dry run) — "게시"를 눌러도 실제 자동 편집/발행이 시작되지 않습니다.</div>
   {% else %}
-  <div class="banner live">실제 게시 모드 — "게시"를 누르면 네이버에 실제로 올라갑니다. 오늘 네이버 게시 {{ today_naver_count }}건.</div>
+  <div class="banner live">실제 게시 모드 — 자동 편집 후 마지막에 반드시 확인 화면이 뜹니다. 오늘 네이버 게시 {{ today_naver_count }}건.</div>
   {% endif %}
   {% if settings.kill_switch %}
   <div class="banner live">전체 중단(kill switch)이 켜져 있어 어떤 게시도 실행되지 않습니다.</div>
@@ -58,22 +65,28 @@
 
   <h2>새 글 생성</h2>
   <form method="post" action="/generate">
-    <input type="text" name="keyword" placeholder="키워드 (비워두면 자동 추천)" style="padding:8px;width:280px;">
+    <div class="field-row">
+      <label>관심분야 (입력하면 네이버 뉴스/블로그에서 글감을 자동으로 모읍니다)</label>
+      <input type="text" name="interest_area" placeholder="예: 거북목, 홈카페, 캠핑용품">
+    </div>
+    <div class="field-row">
+      <label>키워드 직접 지정 (관심분야를 비워둘 때만 사용됩니다)</label>
+      <input type="text" name="keyword" placeholder="비워두면 설정 파일의 시드 키워드 자동 추천">
+    </div>
     <button class="btn-primary" type="submit">생성</button>
   </form>
 
   <h2>생성된 글 ({{ posts|length }}건)</h2>
   {% if not naver_publish_ready %}
   <p style="color:#a8391a;font-size:13px;">
-    네이버 게시 스크립트가 아직 없습니다. README의 안내대로
-    <code>playwright codegen</code>으로 녹화한 뒤
-    <code>{{ settings.naver_post_script_path }}</code>에 저장하면
-    "게시" 버튼이 활성화됩니다.
+    네이버 자동 게시 준비가 안 되어 있습니다: 위에서 네이버 블로그 로그인을
+    완료하고, <code>config/settings.yaml</code>의 <code>naver_blog_id</code>를
+    채워주세요.
   </p>
   {% endif %}
 
   {% for post in posts %}
-  <div class="post-card" id="post-{{ post.id }}">
+  <div class="post-card" id="post-{{ post.id }}" data-post-id="{{ post.id }}">
     <div class="meta">
       {{ post.platform }} · {{ post.keyword }} · {{ post.product_title }}
       <span class="status-pill status-{{ post.status }}">{{ post.status }}</span>
@@ -81,9 +94,15 @@
     <strong>{{ post.title }}</strong>
     <div class="preview">{{ post.markdown }}</div>
     <div style="margin-top:10px;">
-      <button class="btn-primary" onclick="publishPost('{{ post.id }}')" {{ 'disabled' if not naver_publish_ready and not settings.dry_run else '' }}>
+      <button class="btn-primary btn-publish" onclick="publishPost('{{ post.id }}')" {{ 'disabled' if not naver_publish_ready and not settings.dry_run else '' }}>
         게시
       </button>
+    </div>
+    <div class="automation-panel">
+      <div class="automation-step"></div>
+      <div class="automation-message"></div>
+      <div class="automation-actions" style="margin-top:8px;"></div>
+      <img class="automation-preview" style="display:none;">
     </div>
   </div>
   {% endfor %}
@@ -115,17 +134,90 @@
     }
 
     function publishPost(postId) {
-      if (!confirm("이 글을 실제로 게시하시겠습니까? (연습 모드에서는 실제로 올라가지 않습니다)")) return;
+      if (!confirm("자동 편집을 시작할까요? 실제 발행 직전에는 다시 한 번 확인을 요청합니다.")) return;
       fetch(`/posts/${postId}/publish`, { method: "POST" })
         .then((r) => r.json())
         .then((data) => {
           if (data.error) {
             alert(data.error);
-          } else {
-            alert(data.message || `상태: ${data.status}`);
-            location.reload();
+            return;
           }
+          if (data.status === "dry_run") {
+            alert(data.message);
+            location.reload();
+            return;
+          }
+          pollPublishStatus(postId);
         });
+    }
+
+    function signal(postId, action) {
+      fetch(`/posts/${postId}/publish/${action}`, { method: "POST" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.error) alert(data.error);
+        });
+    }
+
+    function pollPublishStatus(postId) {
+      const card = document.getElementById(`post-${postId}`);
+      const panel = card.querySelector(".automation-panel");
+      const stepEl = panel.querySelector(".automation-step");
+      const messageEl = panel.querySelector(".automation-message");
+      const actionsEl = panel.querySelector(".automation-actions");
+      const previewEl = panel.querySelector(".automation-preview");
+      panel.style.display = "block";
+
+      const interval = setInterval(() => {
+        fetch(`/posts/${postId}/publish/status`)
+          .then((r) => r.json())
+          .then((data) => {
+            stepEl.textContent = `단계: ${data.step || "-"}`;
+            messageEl.textContent = data.message || "";
+            actionsEl.innerHTML = "";
+            panel.classList.toggle("blocked", data.state === "blocked" || data.state === "awaiting_confirmation");
+
+            if (data.state === "blocked") {
+              const btn = document.createElement("button");
+              btn.className = "btn-primary";
+              btn.textContent = "브라우저에서 직접 처리했어요 - 계속";
+              btn.onclick = () => signal(postId, "resume");
+              actionsEl.appendChild(btn);
+
+              const cancelBtn = document.createElement("button");
+              cancelBtn.className = "btn-outline";
+              cancelBtn.textContent = "취소";
+              cancelBtn.onclick = () => signal(postId, "cancel");
+              actionsEl.appendChild(cancelBtn);
+            } else if (data.state === "awaiting_confirmation") {
+              if (data.screenshot) {
+                previewEl.src = `/posts/${postId}/publish/preview?t=${Date.now()}`;
+                previewEl.style.display = "block";
+              }
+              const confirmBtn = document.createElement("button");
+              confirmBtn.className = "btn-primary";
+              confirmBtn.textContent = "확인했습니다 - 실제 발행";
+              confirmBtn.onclick = () => {
+                if (confirm("이 내용 그대로 네이버에 실제로 발행됩니다. 계속할까요?")) {
+                  signal(postId, "confirm");
+                }
+              };
+              actionsEl.appendChild(confirmBtn);
+
+              const cancelBtn = document.createElement("button");
+              cancelBtn.className = "btn-outline";
+              cancelBtn.textContent = "발행하지 않고 취소";
+              cancelBtn.onclick = () => signal(postId, "cancel");
+              actionsEl.appendChild(cancelBtn);
+            } else if (["published", "failed", "canceled"].includes(data.state)) {
+              clearInterval(interval);
+              if (data.state === "published") {
+                messageEl.textContent = `발행 완료: ${data.url || ""}`;
+              }
+              setTimeout(() => location.reload(), 1500);
+            }
+          });
+      }, 2000);
     }
   </script>
 </body>

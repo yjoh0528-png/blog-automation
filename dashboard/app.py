@@ -4,17 +4,16 @@ import json
 import logging
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 
 from blogauto.config import Settings
 from blogauto.history.store import HistoryStore
 from blogauto.models import Platform
 
 from .generate import NoContentGeneratedError, generate_one_post
-from .pending_posts import PendingPostStore
+from .pending_posts import PendingPost, PendingPostStore
 from .sites import Site, load_sites
 
 logger = logging.getLogger(__name__)
@@ -75,13 +74,14 @@ def create_app(
         sites = load_sites(sites_path)
         history = HistoryStore(resolve(settings.history_path))
         pending_store = PendingPostStore(resolve(settings.pending_posts_dir))
+        naver_session_exists = (resolve(settings.session_dir) / "naver_blog.json").exists()
 
         return render_template(
             "index.html",
             settings=settings,
             sites=[site_status(site, settings) for site in sites.values()],
             posts=pending_store.list_all(),
-            naver_publish_ready=resolve(settings.naver_post_script_path).exists(),
+            naver_publish_ready=naver_session_exists and bool(settings.naver_blog_id),
             today_naver_count=history.count_today(Platform.NAVER_BLOG),
         )
 
@@ -123,9 +123,12 @@ def create_app(
         history = HistoryStore(resolve(settings.history_path))
         pending_store = PendingPostStore(resolve(settings.pending_posts_dir))
         keyword_term = request.form.get("keyword") or None
+        interest_area = request.form.get("interest_area") or None
 
         try:
-            post = generate_one_post(settings, history, keyword_term=keyword_term)
+            post = generate_one_post(
+                settings, history, keyword_term=keyword_term, interest_area=interest_area
+            )
         except NoContentGeneratedError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -137,6 +140,36 @@ def create_app(
         settings = load_settings()
         pending_store = PendingPostStore(resolve(settings.pending_posts_dir))
         return jsonify([p.__dict__ for p in pending_store.list_all()])
+
+    def control_dir_for(post_id: str, settings: Settings) -> Path:
+        return resolve(settings.pending_posts_dir) / f"{post_id}.control"
+
+    def read_control_status(control_dir: Path) -> dict:
+        status_path = control_dir / "status.json"
+        if not status_path.exists():
+            return {"state": "not_started"}
+        try:
+            return json.loads(status_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"state": "unknown"}
+
+    def sync_pending_from_control(
+        pending_store: PendingPostStore,
+        history: HistoryStore,
+        pending: PendingPost,
+        control_status: dict,
+    ) -> None:
+        """자동화 스크립트가 기록한 상태를 초안 저장소/발행 이력에 반영한다.
+
+        발행 스크립트는 백그라운드 프로세스라 Flask 쪽에 직접 콜백할 수
+        없으므로, 폴링 시점에 상태 전이를 감지해 한 번만 반영한다.
+        """
+        state = control_status.get("state")
+        if state == "published" and pending.status != "published":
+            history.record(Platform.NAVER_BLOG, pending.product_id, pending.title)
+            pending_store.update_status(pending.id, "published")
+        elif state in ("failed", "canceled") and pending.status not in ("failed", "canceled"):
+            pending_store.update_status(pending.id, state)
 
     @app.post("/posts/<post_id>/publish")
     def publish_post(post_id: str):
@@ -153,7 +186,7 @@ def create_app(
             return jsonify(
                 {
                     "status": "dry_run",
-                    "message": "연습 모드입니다. 실제로 게시되지 않았습니다.",
+                    "message": "연습 모드입니다. 자동 편집/발행이 시작되지 않았습니다.",
                 }
             )
 
@@ -175,54 +208,79 @@ def create_app(
                 409,
             )
 
-        script_path = resolve(settings.naver_post_script_path)
-        if not script_path.exists():
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            "녹화된 네이버 게시 스크립트가 없습니다. "
-                            f"playwright codegen으로 녹화해 {script_path}에 저장해주세요."
-                        )
-                    }
-                ),
-                400,
-            )
-
         session_path = resolve(settings.session_dir) / "naver_blog.json"
         if not session_path.exists():
             return jsonify({"error": "네이버 블로그 로그인이 필요합니다."}), 400
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            title_file = Path(tmp_dir) / "title.txt"
-            content_file = Path(tmp_dir) / "content.html"
-            title_file.write_text(pending.title, encoding="utf-8")
-            content_file.write_text(pending.html, encoding="utf-8")
-
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "replay_post.py"),
-                    str(script_path),
-                    str(title_file),
-                    str(content_file),
-                ],
-                cwd=str(base_dir),
-                capture_output=True,
-                text=True,
-            )
-
-        if result.returncode != 0:
-            pending_store.update_status(post_id, "failed")
-            logger.error("네이버 게시 실패: %s", result.stderr)
+        if not settings.naver_blog_id:
             return (
-                jsonify({"error": "게시 스크립트 실행이 실패했습니다.", "detail": result.stderr[-2000:]}),
-                500,
+                jsonify({"error": "config/settings.yaml에 naver_blog_id를 설정해주세요."}),
+                400,
             )
 
-        history.record(platform, pending.product_id, pending.title)
-        pending_store.update_status(post_id, "published")
-        return jsonify({"status": "published"})
+        control_dir = control_dir_for(post_id, settings)
+        control_dir.mkdir(parents=True, exist_ok=True)
+        post_json_path = control_dir / "post.json"
+        post_json_path.write_text(
+            json.dumps(pending.for_automation(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        write_url = f"https://blog.naver.com/{settings.naver_blog_id}?Redirect=Write&categoryNo=0"
+
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "naver_auto_publish.py"),
+                str(post_json_path),
+                str(session_path),
+                str(control_dir),
+                write_url,
+            ],
+            cwd=str(base_dir),
+        )
+        pending_store.update_status(post_id, "publishing")
+        return jsonify({"status": "started"})
+
+    @app.get("/posts/<post_id>/publish/status")
+    def publish_status(post_id: str):
+        settings = load_settings()
+        history = HistoryStore(resolve(settings.history_path))
+        pending_store = PendingPostStore(resolve(settings.pending_posts_dir))
+        pending = pending_store.get(post_id)
+        if pending is None:
+            return jsonify({"error": "초안을 찾을 수 없습니다."}), 404
+
+        control_status = read_control_status(control_dir_for(post_id, settings))
+        sync_pending_from_control(pending_store, history, pending, control_status)
+        return jsonify(control_status)
+
+    @app.get("/posts/<post_id>/publish/preview")
+    def publish_preview(post_id: str):
+        settings = load_settings()
+        preview_path = control_dir_for(post_id, settings) / "preview.png"
+        if not preview_path.exists():
+            return jsonify({"error": "미리보기가 아직 없습니다."}), 404
+        return send_file(preview_path, mimetype="image/png")
+
+    def _signal(post_id: str, name: str):
+        settings = load_settings()
+        control_dir = control_dir_for(post_id, settings)
+        if not control_dir.exists():
+            return jsonify({"error": "진행 중인 자동화가 없습니다."}), 404
+        (control_dir / name).touch()
+        return jsonify({"status": "signaled"})
+
+    @app.post("/posts/<post_id>/publish/resume")
+    def publish_resume(post_id: str):
+        return _signal(post_id, "resume.signal")
+
+    @app.post("/posts/<post_id>/publish/confirm")
+    def publish_confirm(post_id: str):
+        return _signal(post_id, "confirm.signal")
+
+    @app.post("/posts/<post_id>/publish/cancel")
+    def publish_cancel(post_id: str):
+        return _signal(post_id, "cancel.signal")
 
     return app
 

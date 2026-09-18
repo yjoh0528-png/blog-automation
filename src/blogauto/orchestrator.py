@@ -112,11 +112,13 @@ def generate_post_for_keywords(
     keywords: list[Keyword],
     target_audience_map: dict[str, str],
     recent_ids: set[str],
+    source_articles: list | None = None,
 ) -> Post | None:
     """주어진 키워드들을 순서대로 시도해, QA를 통과하는 첫 게시물을 생성해 반환한다.
 
     Orchestrator의 자동 발행 루프와 대시보드의 수동 "생성" 버튼이 모두
-    이 함수를 공유한다.
+    이 함수를 공유한다. source_articles가 주어지면(관심분야 기반 글감
+    발굴) 모든 키워드 시도에 동일하게 참고 자료로 전달한다.
     """
     for keyword in keywords:
         product = find_unused_product(product_sources, keyword.term, recent_ids)
@@ -125,7 +127,12 @@ def generate_post_for_keywords(
         target_audience = target_audience_map.get(keyword.term, "실용적인 선물을 찾는 분")
         try:
             return generate_with_verification(
-                generator, keyword, product, target_audience, recent_ids
+                generator,
+                keyword,
+                product,
+                target_audience,
+                recent_ids,
+                source_articles=source_articles,
             )
         except QAFailedError as exc:
             logger.error("QA 통과 실패, 다음 키워드로 넘어갑니다: %s", exc)

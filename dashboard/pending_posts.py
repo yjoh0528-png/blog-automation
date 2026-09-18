@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,7 +20,22 @@ class PendingPost:
     product_title: str
     keyword: str
     created_at: str
-    status: str = "pending"  # pending | dry_run | published | failed
+    status: str = "pending"  # pending | dry_run | published | failed | canceled
+    # 자동 편집기(scripts/naver_auto_publish.py)가 쓰는 구조화된 데이터.
+    sections: list[dict] = field(default_factory=list)
+    image_url: str | None = None
+    disclosure_text: str = ""
+    product_link: str = ""
+
+    def for_automation(self) -> dict:
+        """scripts/naver_auto_publish.py에 넘길 JSON 페이로드."""
+        return {
+            "title": self.title,
+            "sections": self.sections,
+            "image_url": self.image_url,
+            "product_link": self.product_link,
+            "disclosure_text": self.disclosure_text,
+        }
 
 
 class PendingPostStore:
@@ -41,6 +56,10 @@ class PendingPostStore:
             product_title=post.product.title,
             keyword=post.keyword.term,
             created_at=datetime.now(timezone.utc).isoformat(),
+            sections=[{"heading": s.heading, "body": s.body} for s in post.sections],
+            image_url=post.product.image_url,
+            disclosure_text=post.disclosure_text,
+            product_link=post.product.link,
         )
         self._write(pending)
         return pending

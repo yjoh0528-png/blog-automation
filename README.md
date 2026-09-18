@@ -22,11 +22,15 @@
   버튼을 누르면 Playwright가 실제 브라우저 창을 띄우고, **사람이 직접**
   아이디/비밀번호를 입력해 로그인한다. 자격증명을 코드가 대신 입력하지
   않는다. 로그인 완료 버튼을 누르면 그 세션(쿠키)만 로컬에 저장해 재사용한다.
-- **네이버 게시 자동화는 사용자가 직접 녹화한 스크립트로**: 네이버
-  스마트에디터의 DOM은 계정·시점에 따라 다를 수 있어, 이 프로젝트가
-  셀렉터를 하드코딩하지 않는다. 대신 `playwright codegen`으로 사용자가
-  본인 세션 기준 1회 녹화한 스크립트를 재생하는 방식을 쓴다 (아래
-  "네이버 게시 스크립트 녹화" 절 참고).
+- **네이버 게시 자동화는 "안정적 신호 우선 + 막히면 사람에게 넘김"**:
+  네이버 스마트에디터의 정확한 DOM(CSS 클래스명 등)은 이 프로젝트를 만든
+  환경에서 라이브로 검증할 수 없었다. 그래서 자동입력 로직은 빌드마다
+  바뀔 수 있는 클래스명이 아니라 **버튼 텍스트/접근성 role처럼 비교적
+  안정적인 신호**로 요소를 찾고(`dashboard/naver_automation/locators.py`),
+  브라우저 창은 항상 사람이 볼 수 있게 띄워두며, 어떤 단계든 확신 있게
+  다음 동작을 결정하지 못하면 **자동화를 멈추고 대시보드에서 사람이 직접
+  이어받게** 한다. 실제 "발행" 버튼은 자동 입력이 끝난 뒤 항상 사람이
+  스크린샷을 보고 확인한 다음에만 눌린다.
 - **과장광고 필터**: "100% 효과", "무조건", "완치" 등 표시광고법상
   문제될 수 있는 과장 표현을 QA 단계에서 자동 차단한다
   (`src/blogauto/policy.py`).
@@ -50,29 +54,31 @@ src/blogauto/
   disclosure.py              # 제휴 프로그램별 고지 문구
   config.py                  # 설정 로더 + 환경변수 헬퍼
   keyword_research/          # 네이버 데이터랩 API / 시드 폴백
+  research/                  # 네이버 뉴스·블로그 검색 API로 글감 참고자료 수집
   product_sources/           # 쿠팡 파트너스 / 네이버 쇼핑 / 오늘의집(CSV)
   content/llm.py             # LLM 백엔드: claude -p CLI / Anthropic API / 템플릿
-  content/generator.py       # 소제목 구조를 강제하는 본문 생성기
+  content/generator.py       # 소제목 구조를 강제하고 참고자료를 반영하는 본문 생성기
   qa/                        # 과장광고·필수 구조·중복·고지문구 검증 + 재시도 루프
-  publishing/                # Blogger 완전 자동 발행 / 네이버·티스토리 초안 내보내기
+  publishing/                # Blogger 완전 자동 발행 / 티스토리 초안 내보내기
   history/                   # 발행 이력(JSON) - 중복 방지, 일일 한도, 최소 간격 체크
   orchestrator.py            # 파이프라인 조립 (Orchestrator, 재사용 가능한 빌더 함수들)
 dashboard/
-  app.py                     # Flask 대시보드 (로그인 상태, 생성, 게시)
+  app.py                     # Flask 대시보드 (로그인, 생성, 자동 편집·발행 제어)
   sites.py                   # config/sites.yaml 로더
-  generate.py                # 대시보드용 단건 생성 헬퍼 (orchestrator 파이프라인 재사용)
+  generate.py                # 대시보드용 단건 생성 헬퍼 (관심분야/키워드 입력 처리)
   pending_posts.py           # 생성된 초안을 로컬 JSON으로 관리
+  naver_automation/
+    locators.py               # 텍스트/role 기반 "안정적 신호 우선" 요소 탐색 헬퍼
   templates/index.html
 scripts/
-  run_daily.py                # (선택) Blogger 등 완전 자동 발행 채널용 수동 실행 스크립트
-  browser_login.py            # 범용 Playwright 로그인 세션 캡처
-  replay_post.py              # 사용자가 녹화한 네이버 게시 스크립트 실행기
-  recorded/naver_post.py      # (직접 생성) playwright codegen으로 녹화한 스크립트
+  run_daily.py                 # (선택) Blogger 등 완전 자동 발행 채널용 수동 실행 스크립트
+  browser_login.py             # 범용 Playwright 로그인 세션 캡처
+  naver_auto_publish.py        # 네이버 에디터 자동 입력 + 사람 확인 후 발행 (막히면 일시정지)
 data/
-  sessions/                   # 로그인 세션(쿠키) - git에 절대 커밋되지 않음
-  pending_posts/              # 생성된 초안(JSON)
+  sessions/                    # 로그인 세션(쿠키) - git에 절대 커밋되지 않음
+  pending_posts/               # 생성된 초안(JSON) + <id>.control/ 진행상태·스크린샷
 .github/workflows/
-  tests.yml                   # push/PR마다 테스트 실행 (클라우드 자동 발행 워크플로 없음)
+  tests.yml                    # push/PR마다 테스트 실행 (클라우드 자동 발행 워크플로 없음)
 ```
 
 ## 시작하기
@@ -100,7 +106,7 @@ Anthropic 정책상 구독 OAuth 세션은 무인 클라우드 자동화(예: CI
 | 항목 | 용도 | 없을 때 동작 |
 |---|---|---|
 | `COUPANG_ACCESS_KEY` / `COUPANG_SECRET_KEY` | 쿠팡 파트너스 Open API | 쿠팡 상품 소스 건너뜀 |
-| `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 네이버 데이터랩(키워드) + 쇼핑검색 API | 시드 키워드 폴백 사용 |
+| `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 네이버 데이터랩(키워드) + 쇼핑검색 + 뉴스/블로그 검색(글감 발굴) API | 시드 키워드 폴백 사용, 관심분야 글감 수집 건너뜀 |
 | `NAVER_SHOPPING_AFFILIATE_LINK_TEMPLATE` | 쇼핑커넥트 딥링크 변환 (파트너센터에서 확인) | 원본 링크 그대로 사용 |
 | `BLOGGER_BLOG_ID` / `BLOGGER_CLIENT_ID` / `BLOGGER_CLIENT_SECRET` / `BLOGGER_REFRESH_TOKEN` | Google Blogger 자동 발행 (`scripts/run_daily.py`용) | 구글 자동 발행 비활성화 |
 
@@ -124,47 +130,41 @@ playwright install chromium
 PYTHONPATH=src python3 -m dashboard.app
 ```
 
-브라우저에서 `http://127.0.0.1:5000`을 연다. 화면에서:
+브라우저에서 `http://127.0.0.1:5000`을 연다. `config/settings.yaml`에
+**`naver_blog_id`**(네이버 블로그 아이디)를 먼저 채워둔다 — 글쓰기 URL을
+조립하는 데 필요하다.
 
-1. 네이버 블로그(및 필요하면 쿠팡 파트너스/오늘의집/네이버 브랜드 커넥트)
-   "로그인" 버튼을 누른다 — Playwright 창이 뜨면 평소처럼 직접 로그인한 뒤,
-   화면 우측 상단의 "로그인 완료 - 세션 저장" 버튼을 누른다.
-2. 키워드를 입력하고(비워두면 자동 추천) "생성"을 누른다.
-3. 생성된 글을 검토한다.
-4. "게시"를 누른다 — `dry_run`이 기본값(`true`)이라 실제로는 올라가지 않고
-   상태만 `dry_run`으로 바뀐다. 실제 게시를 원하면 아래 순서를 따른다.
+1. **네이버 블로그** "로그인" 버튼을 누른다 — Playwright 창이 뜨면 평소처럼
+   직접 로그인한 뒤(가능하면 "로그인 상태 유지" 체크), 화면 우측 상단의
+   "로그인 완료 - 세션 저장" 버튼을 누른다. 쿠팡 파트너스/오늘의집/네이버
+   브랜드 커넥트도 같은 방식으로 로그인해둘 수 있다(현재는 세션 저장까지만
+   지원).
+2. **관심분야**를 입력하고(예: "거북목", "홈카페") "생성"을 누른다 —
+   `NAVER_CLIENT_ID`/`SECRET`이 설정되어 있으면 네이버 뉴스·블로그 검색
+   API로 관련 글감을 모아 AI가 참고자료로 활용한다. 관심분야 대신 기존
+   방식대로 "키워드"를 직접 지정하거나 둘 다 비워 설정 파일의 시드
+   키워드를 쓸 수도 있다.
+3. 생성된 글(제목/소제목 구조/상품 공식 이미지)을 검토한다.
+4. "게시"를 누른다.
+   - `dry_run: true`(기본값)면 자동 편집이 시작되지 않고 상태만 `dry_run`으로
+     표시된다.
+   - `dry_run: false`면 브라우저가 열리고 제목·본문·상품 이미지를 **자동으로**
+     입력한다. 이 과정에서 어떤 요소를 확신 있게 찾지 못하면 자동화가
+     **"막힘" 상태로 멈추고**, 브라우저에서 직접 그 단계를 처리한 뒤
+     대시보드의 [계속]을 누르면 이어서 진행된다.
+   - 입력이 끝나면 **스크린샷과 함께 "발행 확인 대기"** 상태가 된다. 내용을
+     확인하고 [확인했습니다 - 실제 발행]을 눌러야만 실제로 네이버에
+     게시된다. [취소]를 누르면 발행하지 않고 브라우저만 닫힌다.
 
-### 네이버 게시 스크립트 녹화 (실제 게시를 원할 때)
-
-이 프로젝트는 네이버 에디터의 셀렉터를 하드코딩하지 않는다 — 대신 사용자가
-1회 녹화한 스크립트를 재생한다.
-
-1. 네이버 로그인을 대시보드에서 먼저 완료해 `data/sessions/naver_blog.json`을
-   만든다.
-2. 아래 명령으로 녹화를 시작한다 (실제 글쓰기 페이지에서 제목/본문 입력,
-   발행까지 원하는 동작을 그대로 수행하면 된다):
-   ```bash
-   playwright codegen --load-storage=data/sessions/naver_blog.json \
-     https://blog.naver.com/<본인아이디>?Redirect=Write
-   ```
-3. 녹화가 끝나면 생성된 Python 스크립트를 `scripts/recorded/naver_post.py`로
-   저장한다.
-4. 스크립트에서 **제목을 입력했던 자리**를 `os.environ["BLOGAUTO_TITLE"]`로,
-   **본문을 입력했던 자리**를 `os.environ["BLOGAUTO_CONTENT"]`로 바꾼다
-   (파일 상단에 `import os` 추가). 예:
-   ```python
-   # 녹화된 그대로 (예시)
-   page.fill("#title-input", "테스트 제목")
-   # ↓ 이렇게 수정
-   page.fill("#title-input", os.environ["BLOGAUTO_TITLE"])
-   ```
-5. `config/settings.yaml`에서 `dry_run: false`로 바꾼다.
-6. 대시보드에서 다시 "게시"를 누르면 이 스크립트가 실행되어 실제로 게시된다.
-
-**처음에는 반드시 비공개 테스트 글로 확인하고, 발행 후 실제 글 주소를 열어
-서식이 제대로 들어갔는지 직접 확인할 것.** 이 저장소를 만든 환경에서는
-네이버 로그인 페이지에 실제 네트워크로 접근할 수 없어(샌드박스 네트워크
-제한), 이 흐름 전체를 실사용 환경에서 직접 검증한 적이 없다.
+**처음에는 반드시 비공개 테스트 글로 확인할 것.** 이 저장소를 만든 환경은
+네이버 로그인 페이지/에디터에 실제 네트워크로 접근할 수 없어(샌드박스
+네트워크 제한), 자동 입력 로직(`scripts/naver_auto_publish.py`,
+`dashboard/naver_automation/locators.py`)의 요소 탐색 문구는 **라이브
+검증 없이 작성된 최선의 추정치**다. 안정적 신호(버튼 텍스트/role) 우선 +
+막히면 사람에게 넘기는 방식으로 설계했지만, 첫 실행에서는 여러 단계가
+"막힘"으로 넘어갈 수 있다. 그때마다 브라우저에서 직접 이어가면 되고,
+자주 막히는 단계가 있다면 `dashboard/naver_automation/locators.py`의
+후보 문구를 실제 화면에 맞게 추가/수정하면 된다.
 
 ### (선택) Google Blogger 완전 자동 발행
 
@@ -195,3 +195,15 @@ pytest -q
   재확인할 것.
 - `config/sites.yaml`의 `login_url` 값들은 확인되지 않은 참고용 기본값이다.
   실제 로그인 페이지로 바로 연결되지 않으면 직접 수정할 것.
+
+## 이번 버전의 스코프 축소 (알아두면 좋은 것)
+
+- **이미지는 제휴 프로그램이 API로 공식 제공하는 상품 이미지만 사용한다.**
+  웹 검색/스크래핑으로 이미지를 가져오는 기능은 저작권 분쟁 소지가 있어
+  포함하지 않았다. 상품에 공식 이미지가 없으면 이미지 없이 발행된다.
+- **인라인 서식(형광펜 강조 등)은 자동 입력에서 생략된다.** contenteditable
+  안에서 정확한 부분 문자열을 선택해 색을 입히는 동작은 가장 깨지기 쉬운
+  부분이라, 소제목/문단/이미지 삽입까지만 자동화했다.
+- **글감 발굴은 네이버 뉴스/블로그 검색 API의 제목+요약만 사용한다.**
+  원문 전체를 가져오지 않고, AI에게 "그대로 베끼지 말고 트렌드만
+  참고하라"고 명시적으로 지시한다.

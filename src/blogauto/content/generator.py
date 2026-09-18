@@ -6,6 +6,7 @@ from .llm import LLMClient
 from ..disclosure import get_disclosure
 from ..models import Keyword, Post, Product, Section
 from ..policy import REQUIRED_SECTION_HEADINGS
+from ..research.models import SourceArticle
 
 _SYSTEM_PROMPT = f"""\
 너는 실용적인 상품 리뷰 블로그 작성자다. 다음 규칙을 반드시 지켜라.
@@ -15,6 +16,8 @@ _SYSTEM_PROMPT = f"""\
    {", ".join(REQUIRED_SECTION_HEADINGS)}
 4. 과도한 판매 유도 문구 대신 정보 제공 위주로, 실제 사용 후기처럼 자연스럽게 작성한다.
 5. 각 섹션은 2~4문장으로 간결하게 작성한다.
+6. 참고 자료가 주어지면, 그 문장을 그대로 베끼지 말고 언급된 트렌드/관심사만
+   참고해 새로 써라. 참고 자료에 없는 사실을 지어내지 마라.
 """
 
 
@@ -26,13 +29,20 @@ class ContentGenerator:
     def __init__(self, llm_client: LLMClient):
         self._llm = llm_client
 
-    def generate(self, keyword: Keyword, product: Product, target_audience: str) -> Post:
+    def generate(
+        self,
+        keyword: Keyword,
+        product: Product,
+        target_audience: str,
+        source_articles: list[SourceArticle] | None = None,
+    ) -> Post:
         title = self._build_title(keyword, product, target_audience)
         user_prompt = (
             f"상품명: {product.title}\n"
             f"타겟 키워드: {keyword.term}\n"
             f"타겟 독자: {target_audience}\n"
             f"카테고리: {product.category or '미지정'}\n\n"
+            f"{self._format_source_articles(source_articles)}"
             "위 정보를 바탕으로 마크다운 소제목(##)을 사용한 블로그 본문을 작성해줘."
         )
         raw = self._llm.generate(_SYSTEM_PROMPT, user_prompt)
@@ -49,6 +59,16 @@ class ContentGenerator:
     @staticmethod
     def _build_title(keyword: Keyword, product: Product, target_audience: str) -> str:
         return f"{product.title} - {target_audience}을 위한 {keyword.term}"
+
+    @staticmethod
+    def _format_source_articles(source_articles: list[SourceArticle] | None) -> str:
+        if not source_articles:
+            return ""
+        lines = ["참고 자료 (제목 + 요약, 그대로 베끼지 말 것):"]
+        for article in source_articles:
+            lines.append(f"- [{article.source_type}] {article.title}: {article.description}")
+        lines.append("")
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _parse_sections(raw: str) -> list[Section]:
