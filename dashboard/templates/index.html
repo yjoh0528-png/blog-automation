@@ -117,8 +117,21 @@
 
   <script>
     function startLogin(siteKey) {
+      const card = document.getElementById(`site-${siteKey}`);
+      const progressEl = card.querySelector(".login-progress");
+      progressEl.textContent = "";
       fetch(`/login/${siteKey}`, { method: "POST" })
-        .then(() => pollLoginStatus(siteKey));
+        .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+          if (!ok) {
+            progressEl.textContent = `시작 실패: ${data.error || "알 수 없는 오류"}`;
+            return;
+          }
+          pollLoginStatus(siteKey);
+        })
+        .catch((err) => {
+          progressEl.textContent = `시작 실패: ${err}`;
+        });
     }
 
     function pollLoginStatus(siteKey) {
@@ -130,12 +143,20 @@
           .then((data) => {
             const progress = data.login_progress;
             if (!progress) return;
-            progressEl.textContent = progress.status;
             if (progress.status === "success") {
+              progressEl.textContent = progress.status;
               clearInterval(interval);
               location.reload();
             } else if (["timeout", "canceled", "error"].includes(progress.status)) {
+              // browser_login.py가 status.json에 남긴 실제 원인(message)을 그대로
+              // 보여준다 - 이전에는 "error"라는 단어만 표시되고 실제 원인은
+              // 화면 어디에도 나오지 않아 사용자가 원인을 알 수 없었다.
+              progressEl.textContent = progress.message
+                ? `${progress.status}: ${progress.message}`
+                : progress.status;
               clearInterval(interval);
+            } else {
+              progressEl.textContent = progress.status;
             }
           });
       }, 2000);

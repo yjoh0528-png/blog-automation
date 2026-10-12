@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 
@@ -101,10 +102,16 @@ class ClaudePrintModeLLMClient(LLMClient):
         self._binary = binary
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
+        # Windows에서 npm으로 설치된 CLI는 실제 실행 파일명이 "claude.cmd"라서,
+        # subprocess.run(["claude", ...])를 shell=True 없이 호출하면 PATH에
+        # 분명히 있어도 FileNotFoundError가 난다. shutil.which로 먼저 실제
+        # 경로(확장자 포함)를 찾아 그 경로를 그대로 실행한다 - shell=True 없이도
+        # Windows/맥/리눅스 모두에서 안전하게 동작한다.
+        resolved_binary = shutil.which(self._binary) or self._binary
         try:
             result = subprocess.run(
                 [
-                    self._binary,
+                    resolved_binary,
                     "-p",
                     user_prompt,
                     "--system-prompt",
@@ -121,7 +128,8 @@ class ClaudePrintModeLLMClient(LLMClient):
         except FileNotFoundError as exc:
             raise ClaudeCliError(
                 f"'{self._binary}' 실행 파일을 찾을 수 없습니다. Claude Code CLI가 "
-                "설치되어 있고 로그인되어 있는지 확인하세요."
+                "설치되어 있고 터미널에서 'claude' 명령이 동작하는지 확인하세요 "
+                "(Windows라면 새 터미널을 열어 PATH가 갱신됐는지도 확인)."
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise ClaudeCliError(f"claude CLI 응답이 {self._timeout}초 내에 오지 않았습니다.") from exc

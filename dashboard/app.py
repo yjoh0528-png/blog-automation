@@ -133,6 +133,9 @@ def create_app(
             )
         except NoContentGeneratedError as exc:
             return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001 - 원인이 무엇이든 빈 500 대신 메시지를 보여준다
+            logger.exception("글 생성 중 예상치 못한 오류")
+            return jsonify({"error": f"글 생성 중 오류가 발생했습니다: {exc}"}), 500
 
         pending = pending_store.save(post, platform="naver_blog")
         return redirect(url_for("index") + f"#post-{pending.id}")

@@ -122,6 +122,38 @@ def test_generate_with_interest_area_collects_no_articles_without_naver_keys(cli
     assert posts[0]["keyword"] == "거북목 완화 용품"
 
 
+def test_generate_surfaces_claude_cli_failure_instead_of_blank_500(client, monkeypatch):
+    # LLM_BACKEND=claude_print인데 claude 바이너리를 못 찾는 상황(예: Windows에서
+    # npm 설치된 claude.cmd를 shell=True 없이 못 찾는 경우)을 흉내낸다. 이전에는
+    # ClaudeCliError가 어디서도 잡히지 않아 Flask가 빈 500을 반환했다 - 지금은
+    # 원인이 담긴 JSON 에러로 응답해야 한다.
+    monkeypatch.setenv("LLM_BACKEND", "claude_print")
+    monkeypatch.setattr("blogauto.content.llm.shutil.which", lambda binary: None)
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("claude not found")
+
+    monkeypatch.setattr("blogauto.content.llm.subprocess.run", fake_run)
+
+    resp = client.post("/generate", data={"keyword": "거북목 완화 용품"})
+
+    assert resp.status_code == 400
+    assert "claude -p" in resp.get_json()["error"]
+    assert client.get("/posts").get_json() == []
+
+
+def test_generate_catches_unexpected_exception_with_json_error(client, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("예상 못한 내부 오류")
+
+    monkeypatch.setattr("dashboard.app.generate_one_post", boom)
+
+    resp = client.post("/generate", data={"keyword": "거북목 완화 용품"})
+
+    assert resp.status_code == 500
+    assert "예상 못한 내부 오류" in resp.get_json()["error"]
+
+
 def test_publish_blocked_by_kill_switch(tmp_path):
     project = make_ready_project(tmp_path, kill_switch=True)
     client = create_app(base_dir=project).test_client()

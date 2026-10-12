@@ -4,6 +4,7 @@ import logging
 
 from blogauto.config import Settings, env
 from blogauto.content.generator import ContentGenerator
+from blogauto.content.llm import ClaudeCliError
 from blogauto.history.store import HistoryStore
 from blogauto.models import Keyword, Post
 from blogauto.orchestrator import (
@@ -79,14 +80,22 @@ def generate_one_post(
         raise NoContentGeneratedError("사용 가능한 키워드가 없습니다.")
 
     recent_ids = history.recent_product_ids(settings.duplicate_lookback_days)
-    post = generate_post_for_keywords(
-        generator,
-        product_sources,
-        keywords,
-        settings.target_audience_map,
-        recent_ids,
-        source_articles=source_articles or None,
-    )
+    try:
+        post = generate_post_for_keywords(
+            generator,
+            product_sources,
+            keywords,
+            settings.target_audience_map,
+            recent_ids,
+            source_articles=source_articles or None,
+        )
+    except ClaudeCliError as exc:
+        # claude -p 실행 자체가 안 되는 건 어떤 키워드를 시도해도 똑같이 실패할
+        # 인프라 문제라, 키워드별 QA 재시도로는 해결되지 않는다(이미 호출
+        # 스택 안에서 재시도가 끝난 뒤에도 올라온 예외다). 재시도하는 대신
+        # 실제 원인 메시지를 그대로 노출해 바로 진단할 수 있게 한다.
+        raise NoContentGeneratedError(f"콘텐츠 생성(claude -p) 실패: {exc}") from exc
+
     if post is None:
         raise NoContentGeneratedError("사용 가능한 키워드/상품 조합을 찾지 못했습니다.")
     return post
