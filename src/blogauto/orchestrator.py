@@ -4,12 +4,17 @@ import logging
 
 from .config import Settings, env
 from .content.generator import ContentGenerator
-from .content.llm import AnthropicLLMClient, LLMClient, TemplateLLMClient
+from .content.llm import (
+    AnthropicLLMClient,
+    ClaudePrintModeLLMClient,
+    LLMClient,
+    TemplateLLMClient,
+)
 from .history.store import HistoryStore
 from .keyword_research.base import KeywordResearchProvider
 from .keyword_research.naver_datalab import NaverDataLabProvider
 from .keyword_research.seed_provider import SeedKeywordProvider
-from .models import Keyword, Platform, Product
+from .models import Keyword, Platform, Post, Product
 from .product_sources.base import ProductSource as ProductSourceProtocol
 from .product_sources.coupang_partners import CoupangPartnersSource
 from .product_sources.naver_shopping import NaverShoppingSource
@@ -17,6 +22,7 @@ from .product_sources.ohouse_curator import OhouseCuratorCsvSource
 from .publishing.base import Publisher
 from .publishing.draft_export import DraftExportPublisher
 from .qa.pipeline import QAFailedError, generate_with_verification
+from .research.naver_image_search import NaverImageSearch
 
 logger = logging.getLogger(__name__)
 
@@ -72,52 +78,81 @@ class Orchestrator:
         self, platform: Platform, publisher: Publisher, keywords: list[Keyword]
     ) -> str | None:
         recent_ids = self._history.recent_product_ids(self._settings.duplicate_lookback_days)
-
-        for keyword in keywords:
-            product = self._find_unused_product(keyword.term, recent_ids)
-            if product is None:
-                continue
-            target_audience = self._settings.target_audience_map.get(
-                keyword.term, "실용적인 선물을 찾는 분"
+        post = generate_post_for_keywords(
+            self._generator,
+            self._product_sources,
+            keywords,
+            self._settings.target_audience_map,
+            recent_ids,
+        )
+        if post is None:
+            logger.warning(
+                "[%s] 사용 가능한 키워드/상품 조합을 찾지 못했습니다.", platform.value
             )
-            try:
-                post = generate_with_verification(
-                    self._generator, keyword, product, target_audience, recent_ids
-                )
-            except QAFailedError as exc:
-                logger.error("QA 통과 실패, 다음 키워드로 넘어갑니다: %s", exc)
-                continue
+            return None
 
-            url = publisher.publish(post)
-            self._history.record(platform, product.product_id, post.title)
-            logger.info("[%s] 게시 완료: %s", platform.value, url)
-            return url
-
-        logger.warning("[%s] 사용 가능한 키워드/상품 조합을 찾지 못했습니다.", platform.value)
-        return None
-
-    def _find_unused_product(self, keyword: str, recent_ids: set[str]) -> Product | None:
-        for source in self._product_sources:
-            for product in source.search(keyword, limit=5):
-                if product.product_id not in recent_ids:
-                    return product
-        return None
+        url = publisher.publish(post)
+        self._history.record(platform, post.product.product_id, post.title)
+        logger.info("[%s] 게시 완료: %s", platform.value, url)
+        return url
 
 
-def build_orchestrator_from_env(settings_path: str = "config/settings.yaml") -> Orchestrator:
-    """환경변수/설정 파일로부터 실제 운영용 Orchestrator를 조립한다."""
-    settings = Settings.load(settings_path)
+def find_unused_product(
+    product_sources: list[ProductSourceProtocol], keyword_term: str, recent_ids: set[str]
+) -> Product | None:
+    for source in product_sources:
+        for product in source.search(keyword_term, limit=5):
+            if product.product_id not in recent_ids:
+                return product
+    return None
 
+
+def generate_post_for_keywords(
+    generator: ContentGenerator,
+    product_sources: list[ProductSourceProtocol],
+    keywords: list[Keyword],
+    target_audience_map: dict[str, str],
+    recent_ids: set[str],
+    source_articles: list | None = None,
+) -> Post | None:
+    """주어진 키워드들을 순서대로 시도해, QA를 통과하는 첫 게시물을 생성해 반환한다.
+
+    Orchestrator의 자동 발행 루프와 대시보드의 수동 "생성" 버튼이 모두
+    이 함수를 공유한다. source_articles가 주어지면(관심분야 기반 글감
+    발굴) 모든 키워드 시도에 동일하게 참고 자료로 전달한다.
+    """
+    for keyword in keywords:
+        product = find_unused_product(product_sources, keyword.term, recent_ids)
+        if product is None:
+            continue
+        target_audience = target_audience_map.get(keyword.term, "실용적인 선물을 찾는 분")
+        try:
+            return generate_with_verification(
+                generator,
+                keyword,
+                product,
+                target_audience,
+                recent_ids,
+                source_articles=source_articles,
+            )
+        except QAFailedError as exc:
+            logger.error("QA 통과 실패, 다음 키워드로 넘어갑니다: %s", exc)
+            continue
+    return None
+
+
+def build_keyword_provider_from_env() -> KeywordResearchProvider:
     naver_client_id = env("NAVER_CLIENT_ID")
     naver_client_secret = env("NAVER_CLIENT_SECRET")
-    keyword_provider: KeywordResearchProvider
     if naver_client_id and naver_client_secret:
-        keyword_provider = NaverDataLabProvider(naver_client_id, naver_client_secret)
-    else:
-        logger.warning("NAVER_CLIENT_ID/SECRET 미설정 - 시드 키워드 폴백을 사용합니다.")
-        keyword_provider = SeedKeywordProvider()
+        return NaverDataLabProvider(naver_client_id, naver_client_secret)
+    logger.warning("NAVER_CLIENT_ID/SECRET 미설정 - 시드 키워드 폴백을 사용합니다.")
+    return SeedKeywordProvider()
 
+
+def build_product_sources_from_env(settings: Settings) -> list[ProductSourceProtocol]:
     product_sources: list[ProductSourceProtocol] = []
+
     coupang_access = env("COUPANG_ACCESS_KEY")
     coupang_secret = env("COUPANG_SECRET_KEY")
     if coupang_access and coupang_secret:
@@ -125,6 +160,8 @@ def build_orchestrator_from_env(settings_path: str = "config/settings.yaml") -> 
     else:
         logger.warning("COUPANG_ACCESS_KEY/SECRET_KEY 미설정 - 쿠팡 상품 소스를 건너뜁니다.")
 
+    naver_client_id = env("NAVER_CLIENT_ID")
+    naver_client_secret = env("NAVER_CLIENT_SECRET")
     if naver_client_id and naver_client_secret:
         product_sources.append(
             NaverShoppingSource(
@@ -135,16 +172,55 @@ def build_orchestrator_from_env(settings_path: str = "config/settings.yaml") -> 
         )
 
     product_sources.append(OhouseCuratorCsvSource(settings.ohouse_csv_path))
+    return product_sources
 
-    llm_client: LLMClient
-    anthropic_key = env("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        llm_client = AnthropicLLMClient(anthropic_key)
-    else:
-        logger.warning("ANTHROPIC_API_KEY 미설정 - 템플릿 폴백 콘텐츠 생성기를 사용합니다.")
-        llm_client = TemplateLLMClient()
 
-    generator = ContentGenerator(llm_client)
+def build_image_search_from_env() -> NaverImageSearch | None:
+    """관심분야/상품명 기반 이미지 후보 검색기를 만든다.
+
+    NAVER_CLIENT_ID/SECRET이 없으면 None을 반환해, 콘텐츠 생성이 기존처럼
+    제휴 상품 공식 이미지 하나만 쓰도록 조용히 폴백한다 (글감 발굴 API와
+    같은 자격증명을 재사용하므로 별도 키가 필요 없다).
+    """
+    client_id = env("NAVER_CLIENT_ID")
+    client_secret = env("NAVER_CLIENT_SECRET")
+    if client_id and client_secret:
+        return NaverImageSearch(client_id, client_secret)
+    logger.warning(
+        "NAVER_CLIENT_ID/SECRET 미설정 - 이미지 후보 검색을 건너뜁니다"
+        "(제휴 상품 공식 이미지만 사용)."
+    )
+    return None
+
+
+def build_llm_client_from_env() -> LLMClient:
+    """LLM_BACKEND 환경변수로 콘텐츠 생성 백엔드를 선택한다.
+
+    기본값은 claude_print - 로컬에 로그인된 Claude 구독(Pro/Max) 세션을
+    쓰는 `claude -p` CLI 헤드리스 모드다. API 키 과금이 필요 없다.
+    """
+    backend = env("LLM_BACKEND", "claude_print")
+    if backend == "claude_print":
+        return ClaudePrintModeLLMClient(model=env("CLAUDE_MODEL", "sonnet"))
+    if backend == "anthropic_api":
+        anthropic_key = env("ANTHROPIC_API_KEY", required=True)
+        return AnthropicLLMClient(anthropic_key)
+    if backend == "template":
+        return TemplateLLMClient()
+    raise RuntimeError(
+        f"알 수 없는 LLM_BACKEND 값: {backend!r} (claude_print|anthropic_api|template 중 하나)"
+    )
+
+
+def build_orchestrator_from_env(settings_path: str = "config/settings.yaml") -> Orchestrator:
+    """환경변수/설정 파일로부터 실제 운영용 Orchestrator를 조립한다."""
+    settings = Settings.load(settings_path)
+
+    keyword_provider = build_keyword_provider_from_env()
+    product_sources = build_product_sources_from_env(settings)
+    generator = ContentGenerator(
+        build_llm_client_from_env(), image_search=build_image_search_from_env()
+    )
     history = HistoryStore(settings.history_path)
 
     publishers: dict[Platform, Publisher] = {}

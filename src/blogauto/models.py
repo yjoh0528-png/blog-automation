@@ -58,6 +58,9 @@ class Post:
 
     def to_markdown(self) -> str:
         lines = [f"# {self.title}", ""]
+        if self.product.image_url:
+            lines.append(f"![{self.product.title}]({self.product.image_url})")
+            lines.append("")
         for section in self.sections:
             lines.append(f"## {section.heading}")
             lines.append("")
@@ -70,6 +73,11 @@ class Post:
 
     def to_html(self) -> str:
         parts = [f"<h1>{self.title}</h1>"]
+        if self.product.image_url:
+            parts.append(
+                f'<p><img src="{self.product.image_url}" alt="{self.product.title}" '
+                'style="max-width:100%;"></p>'
+            )
         for section in self.sections:
             parts.append(f"<h2>{section.heading}</h2>")
             for para in section.body.split("\n\n"):
