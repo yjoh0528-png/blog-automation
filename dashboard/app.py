@@ -38,6 +38,7 @@ def create_app(
     sites_path = sites_path or (base_dir / "config" / "sites.yaml")
 
     app = Flask(__name__)
+    active_logins: dict[str, subprocess.Popen] = {}
 
     def load_settings() -> Settings:
         return Settings.load(settings_path)
@@ -95,10 +96,17 @@ def create_app(
         if site is None:
             return jsonify({"error": f"알 수 없는 사이트: {site_key}"}), 404
 
+        # 버튼을 연달아 누르거나 더블클릭하면 같은 세션 파일을 두고 경쟁하는
+        # 로그인 창이 두 개 뜨면서 TargetClosedError 등 혼란스러운 실패로
+        # 이어진다 - 이미 진행 중이면 새로 띄우지 않는다.
+        running = active_logins.get(site_key)
+        if running is not None and running.poll() is None:
+            return jsonify({"error": "이미 로그인이 진행 중입니다. 기존 창을 확인해주세요."}), 409
+
         session_path = session_path_for(site, settings)
         session_path.parent.mkdir(parents=True, exist_ok=True)
 
-        subprocess.Popen(
+        process = subprocess.Popen(
             [
                 sys.executable,
                 str(REPO_ROOT / "scripts" / "browser_login.py"),
@@ -108,6 +116,7 @@ def create_app(
             ],
             cwd=str(base_dir),
         )
+        active_logins[site_key] = process
         return jsonify({"status": "started"})
 
     @app.get("/login/<site_key>/status")

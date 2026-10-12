@@ -100,6 +100,60 @@ def test_unknown_site_login_status_404(client):
     assert resp.status_code == 404
 
 
+class FakeProcess:
+    def __init__(self):
+        self._running = True
+
+    def poll(self):
+        return None if self._running else 0
+
+    def finish(self):
+        self._running = False
+
+
+def test_start_login_unknown_site_404(client):
+    resp = client.post("/login/unknown_site")
+    assert resp.status_code == 404
+
+
+def test_start_login_spawns_process(client, monkeypatch):
+    fake = FakeProcess()
+    monkeypatch.setattr("dashboard.app.subprocess.Popen", lambda *a, **k: fake)
+
+    resp = client.post("/login/naver_blog")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "started"
+
+
+def test_start_login_blocks_duplicate_while_running(client, monkeypatch):
+    # 더블클릭/연타로 같은 사이트 로그인 창이 두 개 뜨면 같은 세션 파일을
+    # 두고 경쟁하다 TargetClosedError 같은 혼란스러운 실패로 이어진다 -
+    # 이미 진행 중이면 새로 띄우지 않고 명확한 메시지로 막아야 한다.
+    fake = FakeProcess()
+    monkeypatch.setattr("dashboard.app.subprocess.Popen", lambda *a, **k: fake)
+
+    first = client.post("/login/naver_blog")
+    assert first.status_code == 200
+
+    second = client.post("/login/naver_blog")
+    assert second.status_code == 409
+    assert "이미 로그인이 진행 중" in second.get_json()["error"]
+
+
+def test_start_login_allows_retry_after_process_exits(client, monkeypatch):
+    fake = FakeProcess()
+    monkeypatch.setattr("dashboard.app.subprocess.Popen", lambda *a, **k: fake)
+
+    first = client.post("/login/naver_blog")
+    assert first.status_code == 200
+
+    fake.finish()  # 이전 로그인 프로세스가 끝남(성공/실패/취소 등)
+
+    second = client.post("/login/naver_blog")
+    assert second.status_code == 200
+
+
 def test_generate_with_keyword_and_dry_run_publish(client):
     post_id = generate_post(client)
     posts = client.get("/posts").get_json()

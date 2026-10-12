@@ -97,5 +97,11 @@ def generate_one_post(
         raise NoContentGeneratedError(f"콘텐츠 생성(claude -p) 실패: {exc}") from exc
 
     if post is None:
-        raise NoContentGeneratedError("사용 가능한 키워드/상품 조합을 찾지 못했습니다.")
+        raise NoContentGeneratedError(
+            "연결된 상품 데이터가 없어 글을 생성하지 못했습니다. 아래 중 하나를 "
+            "설정해주세요: (1) .env에 COUPANG_ACCESS_KEY/SECRET_KEY 또는 "
+            "NAVER_CLIENT_ID/SECRET을 채우기, 또는 (2) data/ohouse_products.csv를 "
+            "준비하기(data/ohouse_products.csv.example을 복사해 실제 상품 정보로 "
+            "채우면 됩니다)."
+        )
     return post
