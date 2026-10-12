@@ -15,3 +15,13 @@ class SourceArticle:
     description: str
     link: str
     source_type: str  # "news" | "blog"
+
+
+@dataclass
+class ImageCandidate:
+    """본문 대표 이미지 후보 1건 (제휴 상품 공식 이미지 또는 이미지 검색 결과)."""
+
+    url: str
+    title: str = ""
+    width: int | None = None
+    height: int | None = None

@@ -7,6 +7,7 @@ from blogauto.content.generator import ContentGenerator
 from blogauto.history.store import HistoryStore
 from blogauto.models import Keyword, Post
 from blogauto.orchestrator import (
+    build_image_search_from_env,
     build_keyword_provider_from_env,
     build_llm_client_from_env,
     build_product_sources_from_env,
@@ -60,7 +61,9 @@ def generate_one_post(
     """
     keyword_provider = build_keyword_provider_from_env()
     product_sources = build_product_sources_from_env(settings)
-    generator = ContentGenerator(build_llm_client_from_env())
+    generator = ContentGenerator(
+        build_llm_client_from_env(), image_search=build_image_search_from_env()
+    )
 
     source_articles: list = []
     if interest_area:

@@ -14,6 +14,7 @@ from blogauto.models import Platform
 
 from .generate import NoContentGeneratedError, generate_one_post
 from .pending_posts import PendingPost, PendingPostStore
+from .playwright_setup import ensure_playwright_ready, is_playwright_installed
 from .sites import Site, load_sites
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ def create_app(
             posts=pending_store.list_all(),
             naver_publish_ready=naver_session_exists and bool(settings.naver_blog_id),
             today_naver_count=history.count_today(Platform.NAVER_BLOG),
+            playwright_ready=is_playwright_installed(),
         )
 
     @app.post("/login/<site_key>")
@@ -287,4 +289,5 @@ def create_app(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    ensure_playwright_ready()
     create_app().run(host="127.0.0.1", port=5000, debug=False)

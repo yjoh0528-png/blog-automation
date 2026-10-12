@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import logging
 import re
+from dataclasses import replace
 
+from .image_picker import pick_best_image
 from .llm import LLMClient
 from ..disclosure import get_disclosure
 from ..models import Keyword, Post, Product, Section
 from ..policy import REQUIRED_SECTION_HEADINGS
-from ..research.models import SourceArticle
+from ..research.models import ImageCandidate, SourceArticle
+from ..research.naver_image_search import NaverImageSearch
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = f"""\
 너는 실용적인 상품 리뷰 블로그 작성자다. 다음 규칙을 반드시 지켜라.
@@ -26,8 +32,9 @@ class ContentGenerationError(Exception):
 
 
 class ContentGenerator:
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, image_search: NaverImageSearch | None = None):
         self._llm = llm_client
+        self._image_search = image_search
 
     def generate(
         self,
@@ -36,6 +43,7 @@ class ContentGenerator:
         target_audience: str,
         source_articles: list[SourceArticle] | None = None,
     ) -> Post:
+        product = self._with_best_image(keyword, product, target_audience)
         title = self._build_title(keyword, product, target_audience)
         user_prompt = (
             f"상품명: {product.title}\n"
@@ -55,6 +63,30 @@ class ContentGenerator:
             disclosure_text=get_disclosure(product.source),
             tags=[tag for tag in (keyword.term, product.category) if tag],
         )
+
+    def _with_best_image(self, keyword: Keyword, product: Product, target_audience: str) -> Product:
+        """상품 공식 이미지 + (설정되어 있으면) 이미지 검색 후보 중 AI가 가장
+        어울리는 사진을 고른다. 후보가 하나뿐이면 판단 없이 그대로 쓴다."""
+        candidates: list[ImageCandidate] = []
+        if product.image_url:
+            candidates.append(ImageCandidate(url=product.image_url, title=product.title))
+        if self._image_search is not None:
+            try:
+                candidates.extend(
+                    self._image_search.search(f"{product.title} {keyword.term}", display=4)
+                )
+            except Exception as exc:  # noqa: BLE001 - 검색 실패는 생성 흐름을 막지 않는다
+                logger.warning("이미지 후보 검색 실패 - 기존 이미지만 사용합니다: %s", exc)
+
+        if len(candidates) <= 1:
+            return product
+
+        choice = pick_best_image(
+            self._llm, candidates, context=f"{product.title} ({target_audience})"
+        )
+        if choice is None or choice.url == product.image_url:
+            return product
+        return replace(product, image_url=choice.url)
 
     @staticmethod
     def _build_title(keyword: Keyword, product: Product, target_audience: str) -> str:

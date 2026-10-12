@@ -54,10 +54,11 @@ src/blogauto/
   disclosure.py              # 제휴 프로그램별 고지 문구
   config.py                  # 설정 로더 + 환경변수 헬퍼
   keyword_research/          # 네이버 데이터랩 API / 시드 폴백
-  research/                  # 네이버 뉴스·블로그 검색 API로 글감 참고자료 수집
+  research/                  # 네이버 뉴스·블로그 검색(글감) + 이미지검색(이미지 후보) API
   product_sources/           # 쿠팡 파트너스 / 네이버 쇼핑 / 오늘의집(CSV)
-  content/llm.py             # LLM 백엔드: claude -p CLI / Anthropic API / 템플릿
+  content/llm.py             # LLM 백엔드: claude -p CLI / Anthropic API / 템플릿 (+비전 입력)
   content/generator.py       # 소제목 구조를 강제하고 참고자료를 반영하는 본문 생성기
+  content/image_picker.py    # 여러 이미지 후보 중 AI가 글 맥락에 맞는 것을 고르는 로직
   qa/                        # 과장광고·필수 구조·중복·고지문구 검증 + 재시도 루프
   publishing/                # Blogger 완전 자동 발행 / 티스토리 초안 내보내기
   history/                   # 발행 이력(JSON) - 중복 방지, 일일 한도, 최소 간격 체크
@@ -67,6 +68,7 @@ dashboard/
   sites.py                   # config/sites.yaml 로더
   generate.py                # 대시보드용 단건 생성 헬퍼 (관심분야/키워드 입력 처리)
   pending_posts.py           # 생성된 초안을 로컬 JSON으로 관리
+  playwright_setup.py        # Playwright/Chromium 준비 여부 확인 + 자동 설치
   naver_automation/
     locators.py               # 텍스트/role 기반 "안정적 신호 우선" 요소 탐색 헬퍼
   templates/index.html
@@ -106,7 +108,7 @@ Anthropic 정책상 구독 OAuth 세션은 무인 클라우드 자동화(예: CI
 | 항목 | 용도 | 없을 때 동작 |
 |---|---|---|
 | `COUPANG_ACCESS_KEY` / `COUPANG_SECRET_KEY` | 쿠팡 파트너스 Open API | 쿠팡 상품 소스 건너뜀 |
-| `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 네이버 데이터랩(키워드) + 쇼핑검색 + 뉴스/블로그 검색(글감 발굴) API | 시드 키워드 폴백 사용, 관심분야 글감 수집 건너뜀 |
+| `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 네이버 데이터랩(키워드) + 쇼핑검색 + 뉴스/블로그 검색(글감 발굴) + 이미지검색(대표 이미지 후보) API | 시드 키워드 폴백 사용, 관심분야 글감 수집·이미지 후보 검색 건너뜀 |
 | `NAVER_SHOPPING_AFFILIATE_LINK_TEMPLATE` | 쇼핑커넥트 딥링크 변환 (파트너센터에서 확인) | 원본 링크 그대로 사용 |
 | `BLOGGER_BLOG_ID` / `BLOGGER_CLIENT_ID` / `BLOGGER_CLIENT_SECRET` / `BLOGGER_REFRESH_TOKEN` | Google Blogger 자동 발행 (`scripts/run_daily.py`용) | 구글 자동 발행 비활성화 |
 
@@ -116,13 +118,18 @@ Anthropic 정책상 구독 OAuth 세션은 무인 클라우드 자동화(예: CI
 
 ### Playwright 설치
 
+대시보드를 `python3 -m dashboard.app`으로 직접 실행하면, 시작 시점에
+Playwright 패키지/Chromium이 없는지 자동으로 확인하고 없으면
+`pip install playwright && playwright install chromium`을 **자동으로
+실행**한다(`dashboard/playwright_setup.py`). 네트워크 제한 등으로 자동
+설치가 실패해도 대시보드 자체는 계속 켜진 채로 유지되며, 홈 화면에
+경고 배너가 뜨고 로그인/자동 게시 버튼만 동작하지 않는다. 그럴 때는
+아래를 수동으로 실행한 뒤 대시보드를 재시작하면 된다.
+
 ```bash
 pip install playwright
 playwright install chromium
 ```
-
-(`pip install -r requirements.txt`에 `playwright` 패키지는 포함되어 있지만,
-브라우저 바이너리는 `playwright install`을 한 번 더 실행해야 받아진다.)
 
 ### 대시보드 실행
 
@@ -196,11 +203,26 @@ pytest -q
 - `config/sites.yaml`의 `login_url` 값들은 확인되지 않은 참고용 기본값이다.
   실제 로그인 페이지로 바로 연결되지 않으면 직접 수정할 것.
 
+## 이미지 선택 방식
+
+- **후보 1: 제휴 프로그램이 API로 공식 제공하는 상품 이미지** (`Product.image_url`) -
+  항상 최우선 후보로 포함된다.
+- **후보 2 (선택): 네이버 이미지검색 API** (`NAVER_CLIENT_ID/SECRET` 설정 시,
+  `상품명 + 키워드`로 검색) - `src/blogauto/research/naver_image_search.py`.
+  화면 스크래핑이 아니라 공식 Open API지만, 검색 결과 이미지는 각
+  웹사이트의 저작물이지 네이버나 이 프로젝트의 소유가 아니다. 상업적
+  재배포 소지가 걱정되는 이미지가 섞일 수 있으니, 발행 전 사람이 스크린샷
+  미리보기로 이미지를 직접 확인하는 기존 체크포인트에서 함께 확인할 것.
+- 후보가 2개 이상이면 `src/blogauto/content/image_picker.py`가 후보들을
+  로컬로 내려받아 LLM(`claude -p` 등)에게 **직접 보여주고** 글 주제에
+  가장 잘 맞는 사진을 고르게 한다. 다운로드/판단 중 하나라도 실패하면
+  조용히 폴백하며(공식 이미지 우선) 전체 생성 파이프라인을 막지 않는다.
+  후보가 1개뿐이면(이미지검색 미설정 등) AI 판단 없이 그대로 쓴다.
+- `NAVER_CLIENT_ID/SECRET`이 없으면 이미지검색 후보 수집을 건너뛰어
+  기존처럼 공식 상품 이미지 하나만 쓴다(완전히 하위 호환).
+
 ## 이번 버전의 스코프 축소 (알아두면 좋은 것)
 
-- **이미지는 제휴 프로그램이 API로 공식 제공하는 상품 이미지만 사용한다.**
-  웹 검색/스크래핑으로 이미지를 가져오는 기능은 저작권 분쟁 소지가 있어
-  포함하지 않았다. 상품에 공식 이미지가 없으면 이미지 없이 발행된다.
 - **인라인 서식(형광펜 강조 등)은 자동 입력에서 생략된다.** contenteditable
   안에서 정확한 부분 문자열을 선택해 색을 입히는 동작은 가장 깨지기 쉬운
   부분이라, 소제목/문단/이미지 삽입까지만 자동화했다.

@@ -22,6 +22,7 @@ from .product_sources.ohouse_curator import OhouseCuratorCsvSource
 from .publishing.base import Publisher
 from .publishing.draft_export import DraftExportPublisher
 from .qa.pipeline import QAFailedError, generate_with_verification
+from .research.naver_image_search import NaverImageSearch
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,24 @@ def build_product_sources_from_env(settings: Settings) -> list[ProductSourceProt
     return product_sources
 
 
+def build_image_search_from_env() -> NaverImageSearch | None:
+    """관심분야/상품명 기반 이미지 후보 검색기를 만든다.
+
+    NAVER_CLIENT_ID/SECRET이 없으면 None을 반환해, 콘텐츠 생성이 기존처럼
+    제휴 상품 공식 이미지 하나만 쓰도록 조용히 폴백한다 (글감 발굴 API와
+    같은 자격증명을 재사용하므로 별도 키가 필요 없다).
+    """
+    client_id = env("NAVER_CLIENT_ID")
+    client_secret = env("NAVER_CLIENT_SECRET")
+    if client_id and client_secret:
+        return NaverImageSearch(client_id, client_secret)
+    logger.warning(
+        "NAVER_CLIENT_ID/SECRET 미설정 - 이미지 후보 검색을 건너뜁니다"
+        "(제휴 상품 공식 이미지만 사용)."
+    )
+    return None
+
+
 def build_llm_client_from_env() -> LLMClient:
     """LLM_BACKEND 환경변수로 콘텐츠 생성 백엔드를 선택한다.
 
@@ -199,7 +218,9 @@ def build_orchestrator_from_env(settings_path: str = "config/settings.yaml") -> 
 
     keyword_provider = build_keyword_provider_from_env()
     product_sources = build_product_sources_from_env(settings)
-    generator = ContentGenerator(build_llm_client_from_env())
+    generator = ContentGenerator(
+        build_llm_client_from_env(), image_search=build_image_search_from_env()
+    )
     history = HistoryStore(settings.history_path)
 
     publishers: dict[Platform, Publisher] = {}
